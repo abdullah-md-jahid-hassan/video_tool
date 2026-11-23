@@ -5,11 +5,18 @@ from __future__ import annotations
 import argparse
 import secrets
 import sys
+import tempfile
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 
+from video_cliping.cut import clip as default_clip
+from video_cliping.errors import EngineError
+from video_cliping.web.job import clip_from_form, failure_notice, form_state, success_notice
 from video_cliping.web.page import clip_page, home_page, message_page
+from video_cliping.web.upload import MAX_UPLOAD_BYTES, FormError, ParsedForm, parse_form
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _MAX_TOKENS = 50
@@ -22,6 +29,7 @@ class ClipServer(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.tokens: list[str] = []
         self.token_lock = threading.Lock()
+        self.clip_fn = default_clip
 
     def issue_token(self) -> str:
         """Return a new token and forget tokens older than the last 50."""
@@ -41,7 +49,7 @@ class ClipServer(ThreadingHTTPServer):
 
 
 class ClipHandler(BaseHTTPRequestHandler):
-    """GET / shows the tool. GET /clip shows the form."""
+    """GET / shows the tool. GET /clip shows the form. POST /clip runs one cut."""
 
     server: ClipServer
 
@@ -56,11 +64,60 @@ class ClipHandler(BaseHTTPRequestHandler):
         self._html(404, message_page("That page is not here."))
 
     def do_POST(self) -> None:  # noqa: N802
-        self._html(404, message_page("That page is not here."))
+        self.close_connection = True
+        if urlparse(self.path).path != "/clip":
+            self._html(404, message_page("That page is not here."))
+            return
+        if not _same_computer(self.headers.get("Host", ""), self.headers.get("Origin")):
+            self._html(403, message_page("This page is only for this computer."))
+            return
+        length = self._content_length()
+        if length is None:
+            return
+        self._run_clip(length)
 
     def log_message(self, fmt: str, *args: object) -> None:
         """Write one request line to stderr. The body is not logged."""
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+
+    def _content_length(self) -> int | None:
+        raw = self.headers.get("Content-Length")
+        if raw is None or not raw.isdigit():
+            self._html(400, message_page("The form has no length."))
+            return None
+        length = int(raw)
+        if length > MAX_UPLOAD_BYTES:
+            self._html(400, message_page("That video is too large for this page."))
+            return None
+        return length
+
+    def _run_clip(self, length: int) -> None:
+        try:
+            with tempfile.TemporaryDirectory(prefix="video-clip-") as folder:
+                parsed = parse_form(
+                    self.rfile,
+                    self.headers.get("Content-Type", ""),
+                    length,
+                    Path(folder),
+                )
+                self._finish_clip(parsed)
+        except FormError as exc:
+            self._html(400, message_page(str(exc)))
+        except Exception:
+            traceback.print_exc()
+            self._html(500, message_page("The cut did not finish."))
+
+    def _finish_clip(self, parsed: ParsedForm) -> None:
+        if not self.server.take_token(parsed.fields.get("csrf", "")):
+            self._html(403, message_page("The form expired. Open Video clipping again."))
+            return
+        state = form_state(parsed.fields)
+        try:
+            report = clip_from_form(parsed, self.server.clip_fn)
+        except EngineError as exc:
+            self._html(400, clip_page(self.server.issue_token(), state, failure_notice(exc)))
+            return
+        self._html(200, clip_page(self.server.issue_token(), state, success_notice(report)))
 
     def _html(self, status: int, body: str) -> None:
         data = body.encode("utf-8")
@@ -72,6 +129,23 @@ class ClipHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(data)
+
+
+def _same_computer(host: str, origin: str | None) -> bool:
+    if _host_name(host) not in _LOCAL_HOSTS:
+        return False
+    if origin is None:
+        return True
+    return origin == f"http://{host}"
+
+
+def _host_name(value: str) -> str:
+    host = value.strip().lower()
+    if host.startswith("["):
+        return host.split("]", 1)[0].removeprefix("[")
+    if host.count(":") == 1:
+        return host.split(":", 1)[0]
+    return host
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
