@@ -24,7 +24,7 @@ class StreamInfo:
 
 @dataclass(frozen=True)
 class MediaInfo:
-    """What ffprobe reported about one file."""
+    """What a read of one file reported."""
 
     path: Path
     format_name: str

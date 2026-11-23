@@ -6,7 +6,7 @@ class EngineError(Exception):
 
 
 class ToolMissing(EngineError):
-    """ffmpeg or ffprobe is not on PATH."""
+    """Kept so older callers can still catch it. The current cutter does not raise it."""
 
 
 class InputNotFound(EngineError):
@@ -43,7 +43,7 @@ class ContainerRejected(EngineError):
 
 
 class FfmpegFailed(EngineError):
-    """ffmpeg exited with an error. stderr is the last 200 lines."""
+    """PyAV could not read or write the file. stderr is the library message."""
 
     def __init__(self, message: str, command: list[str], stderr: str) -> None:
         super().__init__(message)
@@ -52,7 +52,7 @@ class FfmpegFailed(EngineError):
 
 
 class OutputCheckFailed(EngineError):
-    """ffmpeg exited 0, but the new file does not match the request."""
+    """The new file was written, but it does not match the request."""
 
     def __init__(self, message: str, command: list[str]) -> None:
         super().__init__(message)
