@@ -7,8 +7,8 @@ name = "video-cliping"
 version = "0.1.0"
 description = "Cut a local video by copying packets, without encoding it again."
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = ["av==19.0.2"]
 
 [project.optional-dependencies]
 dev = ["pytest==9.2.0"]
