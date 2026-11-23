@@ -9,7 +9,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 ```
 
-`ffmpeg` and `ffprobe` must be on your PATH. The package does not download them.
+PyAV is installed inside `.venv` with the package. A system `ffmpeg` is not required.
 
 ## Cut a clip
 
