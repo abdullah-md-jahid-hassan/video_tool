@@ -65,7 +65,17 @@ From this folder:
 .venv/bin/video-clip-web
 ```
 
-Open http://127.0.0.1:8000/ . The page listens on this computer only. The only tool is Video clipping. Choose a video on this computer, then choose a destination folder, or tick the box to save the clip in the same folder as the video. If you do neither, the clip is written to `outputs/cliping`. The page creates that folder. A clip saved next to the video gets `-clip` in the name, so the original file stays. The other fields are the same options as the command. Exact frame is refused.
+Open http://127.0.0.1:8000/ . The page listens on this computer only. The only tool is Video clipping.
+
+On the form:
+
+- Choose a video on this computer, or type its path. The chooser does not list names that start with `.`.
+- Choose a destination folder, or tick **Save in the same folder as the video**. If you do neither, the clip is written to `outputs/cliping`. The page creates that folder. The command does not.
+- A tick on the same-folder box wins over a chosen folder.
+- If the output path would be the video itself, the new name ends in `-clip`, so the original file stays.
+- The other fields are the same options as the command. Exact frame is refused.
+
+The folder rules are written out in [the page notes](docs/core_engine/page.md).
 
 ```bash
 .venv/bin/video-clip-web --port 8765

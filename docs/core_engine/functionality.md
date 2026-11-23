@@ -14,7 +14,7 @@ These are the operations the package implements. Each one copies packets or only
 | Fast start | `faststart` on a `.mp4` or `.mov` moves the index to the front. Playback can start before the whole file is read. The packets are still the original packets. |
 | Overwrite | Off by default. On replaces an existing destination. |
 
-The command line and the web form call this same `clip` function.
+The command line and [the local page](page.md) call this same `clip` function. The page adds the folder choice. It does not add a different cut.
 
 ## Refused
 

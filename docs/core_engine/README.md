@@ -29,6 +29,7 @@ A packet copy is like tearing a chapter out of a printed book. You do not retype
 3. [The cut steps](commands.md) — the PyAV steps one cut takes. There is no shell command.
 4. [Limits](limits.md) — where a cut lands, and what fails.
 5. [Python contract](python-contract.md) — the functions, inputs, results, and errors.
+6. [The local page](page.md) — the one tool, the folder choice, and the form fields. The page is a caller of the engine, not part of the cut itself.
 
 ## What the engine does
 
