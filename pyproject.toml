@@ -13,6 +13,9 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest==9.2.0"]
 
+[project.scripts]
+video-clip = "video_cliping.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
