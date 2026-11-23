@@ -5,21 +5,21 @@ from __future__ import annotations
 import argparse
 import secrets
 import sys
-import tempfile
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from video_cliping.cut import clip as default_clip
 from video_cliping.errors import EngineError
-from video_cliping.web.job import clip_from_form, failure_notice, form_state, success_notice
-from video_cliping.web.page import clip_page, home_page, message_page
-from video_cliping.web.upload import MAX_UPLOAD_BYTES, FormError, ParsedForm, parse_form
+from video_cliping.web.browse import BrowseError, list_directory, open_directory, start_directory
+from video_cliping.web.job import clip_from_form, failure_notice, form_state, parse_fields, success_notice
+from video_cliping.web.page import browse_page, browse_target, clip_page, home_page, message_page
+from video_cliping.web.upload import FormError
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _MAX_TOKENS = 50
+_MAX_FORM_BYTES = 64 * 1024
 
 
 class ClipServer(ThreadingHTTPServer):
@@ -54,68 +54,95 @@ class ClipHandler(BaseHTTPRequestHandler):
     server: ClipServer
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
-        if path == "/":
+        parsed = urlparse(self.path)
+        fields = _query_fields(parsed.query)
+        if parsed.path == "/":
             self._html(200, home_page())
             return
-        if path == "/clip":
-            self._html(200, clip_page(self.server.issue_token()))
+        if parsed.path == "/clip":
+            self._html(200, clip_page(self.server.issue_token(), form_state(fields)))
+            return
+        if parsed.path == "/browse":
+            self._show_browse(fields)
             return
         self._html(404, message_page("That page is not here."))
 
     def do_POST(self) -> None:  # noqa: N802
         self.close_connection = True
-        if urlparse(self.path).path != "/clip":
+        path = urlparse(self.path).path
+        if path not in {"/clip", "/browse"}:
             self._html(404, message_page("That page is not here."))
             return
         if not _same_computer(self.headers.get("Host", ""), self.headers.get("Origin")):
             self._html(403, message_page("This page is only for this computer."))
             return
-        length = self._content_length()
-        if length is None:
+        raw = self._body()
+        if raw is None:
             return
-        self._run_clip(length)
+        try:
+            fields = parse_fields(raw)
+        except FormError as exc:
+            self._html(400, message_page(str(exc)))
+            return
+        if not self.server.take_token(fields.get("csrf", "")):
+            self._html(403, message_page("The form expired. Open Video clipping again."))
+            return
+        if path == "/browse":
+            self._redirect_browse(fields)
+            return
+        self._finish_clip(fields)
 
     def log_message(self, fmt: str, *args: object) -> None:
         """Write one request line to stderr. The body is not logged."""
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
-    def _content_length(self) -> int | None:
-        raw = self.headers.get("Content-Length")
-        if raw is None or not raw.isdigit():
+    def _body(self) -> bytes | None:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None or not raw_length.isdigit():
             self._html(400, message_page("The form has no length."))
             return None
-        length = int(raw)
-        if length > MAX_UPLOAD_BYTES:
-            self._html(400, message_page("That video is too large for this page."))
+        length = int(raw_length)
+        if length > _MAX_FORM_BYTES:
+            self._html(400, message_page("The form is too large."))
             return None
-        return length
+        return self.rfile.read(length)
 
-    def _run_clip(self, length: int) -> None:
+    def _show_browse(self, fields: dict[str, str]) -> None:
+        kind = fields.get("kind", "")
+        if kind not in {"file", "folder"}:
+            self._html(400, message_page("Choose a file or a folder."))
+            return
+        state = form_state(fields)
         try:
-            with tempfile.TemporaryDirectory(prefix="video-clip-") as folder:
-                parsed = parse_form(
-                    self.rfile,
-                    self.headers.get("Content-Type", ""),
-                    length,
-                    Path(folder),
-                )
-                self._finish_clip(parsed)
-        except FormError as exc:
+            folder = open_directory(fields["dir"]) if fields.get("dir") else start_directory(kind, state.source, state.dest_dir)
+            entries, truncated = list_directory(folder)
+        except BrowseError as exc:
             self._html(400, message_page(str(exc)))
+            return
+        self._html(200, browse_page(kind, folder, entries, truncated, state))
+
+    def _redirect_browse(self, fields: dict[str, str]) -> None:
+        kind = fields.get("kind", "")
+        if kind not in {"file", "folder"}:
+            self._html(400, message_page("Choose a file or a folder."))
+            return
+        state = form_state(fields)
+        folder = start_directory(kind, state.source, state.dest_dir)
+        self.send_response(303)
+        self.send_header("Location", browse_target(kind, folder, state))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _finish_clip(self, fields: dict[str, str]) -> None:
+        state = form_state(fields)
+        try:
+            report = clip_from_form(fields, self.server.clip_fn)
+        except EngineError as exc:
+            self._html(400, clip_page(self.server.issue_token(), state, failure_notice(exc)))
+            return
         except Exception:
             traceback.print_exc()
             self._html(500, message_page("The cut did not finish."))
-
-    def _finish_clip(self, parsed: ParsedForm) -> None:
-        if not self.server.take_token(parsed.fields.get("csrf", "")):
-            self._html(403, message_page("The form expired. Open Video clipping again."))
-            return
-        state = form_state(parsed.fields)
-        try:
-            report = clip_from_form(parsed, self.server.clip_fn)
-        except EngineError as exc:
-            self._html(400, clip_page(self.server.issue_token(), state, failure_notice(exc)))
             return
         self._html(200, clip_page(self.server.issue_token(), state, success_notice(report)))
 
@@ -131,10 +158,16 @@ class ClipHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def _query_fields(query: str) -> dict[str, str]:
+    parsed = parse_qs(query, keep_blank_values=True, max_num_fields=30)
+    return {key: values[-1] for key, values in parsed.items()}
+
+
 def _same_computer(host: str, origin: str | None) -> bool:
     if _host_name(host) not in _LOCAL_HOSTS:
         return False
-    if origin is None:
+    if origin is None or origin == "null":
+        # A local form can arrive with no origin. The one-time token still has to match.
         return True
     return origin == f"http://{host}"
 

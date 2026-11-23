@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
+from pathlib import Path
+from urllib.parse import urlencode
+
+from video_cliping.web.browse import BrowseEntry
 
 DEFAULT_DEST_DIR = "outputs/cliping"
 
 
 @dataclass(frozen=True)
 class FormState:
-    """Values to show again after a cut."""
+    """Values to show again after a cut or a folder choice."""
 
+    source: str = ""
     start: str = ""
     end: str = ""
     maps: str = ""
-    dest_dir: str = DEFAULT_DEST_DIR
+    dest_dir: str = ""
+    same_folder: bool = False
     overwrite: bool = False
     faststart: bool = False
     drop_rejected_streams: bool = False
+    exact: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,12 +54,13 @@ def clip_page(token: str, state: FormState | None = None, notice: Notice | None 
     <p><a href="/">Back</a></p>
     <h1>Video clipping</h1>
     {_notice(notice)}
-    <form action="/clip" method="post" enctype="multipart/form-data">
+    <form action="/clip" method="post">
       <input type="hidden" name="csrf" value="{escape(token, quote=True)}">
       <label>Video file
-        <span class="hint">Choose a file on this computer. It is not uploaded anywhere else.</span>
-        <input type="file" name="video" accept="video/*,.mp4,.mkv,.mov,.webm,.m4v" required>
+        <span class="hint">Type a path, or choose a file on this computer.</span>
+        <input type="text" name="source" value="{escape(form.source, quote=True)}" autocomplete="off">
       </label>
+      <button type="submit" class="secondary" formaction="/browse" name="kind" value="file">Choose a file</button>
       <label>Start
         <span class="hint">Optional. Seconds, such as 90, or a clock, such as 00:01:30. Empty starts at the beginning.</span>
         <input type="text" name="start" value="{escape(form.start, quote=True)}" autocomplete="off">
@@ -66,12 +74,17 @@ def clip_page(token: str, state: FormState | None = None, notice: Notice | None 
         <textarea name="maps" rows="3">{escape(form.maps)}</textarea>
       </label>
       <label>Destination folder
-        <span class="hint">A folder on this computer. Empty uses outputs/cliping, next to where you started the server.</span>
-        <input type="text" name="dest_dir" value="{escape(form.dest_dir, quote=True)}">
+        <span class="hint">Choose a folder, or tick the box to save next to the video. If you do neither, the clip goes to {escape(DEFAULT_DEST_DIR)}.</span>
+        <input type="text" name="dest_dir" value="{escape(form.dest_dir, quote=True)}" autocomplete="off">
       </label>
+      <button type="submit" class="secondary" formaction="/browse" name="kind" value="folder">Choose a folder</button>
+      <label class="check"><input type="checkbox" name="same_folder" {_checked(form.same_folder)}>Save in the same folder as the video</label>
+      <p class="hint">When the box is ticked, a chosen folder is ignored. The new file name ends in -clip, so the original video stays.</p>
       <label class="check"><input type="checkbox" name="overwrite" {_checked(form.overwrite)}>Replace the output file if it is already there</label>
       <label class="check"><input type="checkbox" name="faststart" {_checked(form.faststart)}>Put the MP4 or MOV index at the front of the file</label>
       <label class="check"><input type="checkbox" name="drop_rejected_streams" {_checked(form.drop_rejected_streams)}>If the container cannot hold a stream, leave that stream out</label>
+      <label class="check"><input type="checkbox" name="exact" {_checked(form.exact)}>Cut on an exact frame</label>
+      <p class="hint">An exact frame is refused. It would encode the video.</p>
       <button type="submit">Clip the video</button>
     </form>
     <p class="hint">The cut can start a little early, on a keyframe. The frames that are kept are the original frames.</p>
@@ -79,9 +92,102 @@ def clip_page(token: str, state: FormState | None = None, notice: Notice | None 
     return _document("Video clipping", body)
 
 
+def browse_page(
+    kind: str,
+    folder: Path,
+    entries: tuple[BrowseEntry, ...],
+    truncated: bool,
+    state: FormState,
+) -> str:
+    """A list of one folder. kind is file or folder."""
+    title = "Choose a file" if kind == "file" else "Choose a folder"
+    use = _use_folder(kind, folder, state)
+    parent = _up_link(kind, folder, state)
+    items = "\n".join(_entry_link(kind, entry, state) for entry in entries)
+    more = "<p>This folder has more items than the page shows.</p>" if truncated else ""
+    back = escape(clip_target(state), quote=True)
+    body = f"""
+    <p><a href="{back}">Back to the form</a></p>
+    <h1>{title}</h1>
+    <p>{escape(str(folder))}</p>
+    {use}
+    {parent}
+    <ul>
+      {items}
+    </ul>
+    {more}
+    """
+    return _document(title, body)
+
+
+def browse_target(kind: str, folder: Path, state: FormState) -> str:
+    """URL for one folder in the chooser."""
+    return "/browse?" + urlencode(_pairs(state, kind=kind, directory=str(folder)))
+
+
+def clip_target(state: FormState) -> str:
+    """URL that opens the form with these values."""
+    pairs = _pairs(state)
+    if not pairs:
+        return "/clip"
+    return "/clip?" + urlencode(pairs)
+
+
 def message_page(text: str) -> str:
     """A short page with one sentence."""
     return _document("Video clipping", f"<h1>Video clipping</h1><p>{escape(text)}</p><p><a href=\"/\">Back</a></p>")
+
+
+def _use_folder(kind: str, folder: Path, state: FormState) -> str:
+    if kind != "folder":
+        return ""
+    href = escape(clip_target(replace(state, dest_dir=str(folder), same_folder=False)), quote=True)
+    return f'<p><a class="tool" href="{href}">Use this folder</a></p>'
+
+
+def _up_link(kind: str, folder: Path, state: FormState) -> str:
+    if folder.parent == folder:
+        return ""
+    href = escape(browse_target(kind, folder.parent, state), quote=True)
+    return f'<p><a href="{href}">Up</a></p>'
+
+
+def _entry_link(kind: str, entry: BrowseEntry, state: FormState) -> str:
+    if entry.is_dir:
+        href = browse_target(kind, entry.path, state)
+        label = entry.name + "/"
+    elif kind == "file":
+        href = clip_target(replace(state, source=str(entry.path)))
+        label = entry.name
+    else:
+        return f"<li>{escape(entry.name)}</li>"
+    return f'<li><a href="{escape(href, quote=True)}">{escape(label)}</a></li>'
+
+
+def _pairs(state: FormState, kind: str = "", directory: str = "") -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    if kind:
+        pairs.append(("kind", kind))
+    if directory:
+        pairs.append(("dir", directory))
+    for key, value in (
+        ("source", state.source),
+        ("dest_dir", state.dest_dir),
+        ("start", state.start),
+        ("end", state.end),
+        ("maps", state.maps),
+    ):
+        if value:
+            pairs.append((key, value))
+    flags = (
+        ("same_folder", state.same_folder),
+        ("overwrite", state.overwrite),
+        ("faststart", state.faststart),
+        ("drop_rejected_streams", state.drop_rejected_streams),
+        ("exact", state.exact),
+    )
+    pairs.extend((key, "on") for key, on in flags if on)
+    return pairs
 
 
 def _notice(notice: Notice | None) -> str:
@@ -114,13 +220,17 @@ def _document(title: str, body: str) -> str:
     a.tool:hover {{ border-color: #1d4e39; }}
     label {{ display: block; margin-top: 1rem; font-weight: 650; }}
     .hint {{ display: block; margin: 0.2rem 0 0.35rem; font-weight: 400; color: #5c564c; }}
-    input[type="text"], input[type="file"], textarea {{
+    input[type="text"], textarea {{
       width: 100%; box-sizing: border-box; font: inherit; padding: 0.45rem 0.5rem;
       background: #fff; border: 1px solid #cfc8bc; border-radius: 6px; }}
     label.check {{ font-weight: 400; }}
     label.check input {{ margin-right: 0.4rem; }}
     button {{ margin-top: 1.25rem; font: inherit; padding: 0.55rem 0.9rem;
       background: #1d4e39; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }}
+    button.secondary {{ margin-right: 0.4rem; background: #fff; color: #1d4e39;
+      border: 1px solid #1d4e39; }}
+    ul {{ padding-left: 1.2rem; }}
+    li {{ margin: 0.25rem 0; }}
     .ok, .error {{ padding: 0.75rem 1rem; border-radius: 8px; }}
     .ok {{ background: #e5f4ea; }}
     .error {{ background: #fde8e4; }}

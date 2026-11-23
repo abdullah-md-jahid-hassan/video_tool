@@ -47,18 +47,22 @@ def test_home_has_one_tool(page_server: ClipServer) -> None:
     assert "Video clipping" in body
 
 
-def test_clip_form_defaults_to_outputs_folder(page_server: ClipServer) -> None:
+def test_clip_form_has_the_engine_choices(page_server: ClipServer) -> None:
     status, body = _get(page_server, "/clip")
     assert status == 200
-    assert 'name="video"' in body
+    assert 'name="source"' in body
+    assert "Choose a file" in body
+    assert "Choose a folder" in body
     assert 'name="start"' in body
     assert 'name="end"' in body
     assert 'name="maps"' in body
-    assert 'name="dest_dir"' in body
-    assert f'value="{DEFAULT_DEST_DIR}"' in body
+    assert 'name="dest_dir" value=""' in body
+    assert 'name="same_folder"' in body
+    assert DEFAULT_DEST_DIR in body
     assert 'name="overwrite"' in body
     assert 'name="faststart"' in body
     assert 'name="drop_rejected_streams"' in body
+    assert 'name="exact"' in body
     assert 'name="csrf"' in body
     assert page_server.tokens
 
